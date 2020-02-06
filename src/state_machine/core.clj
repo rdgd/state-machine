@@ -27,7 +27,6 @@
 (defn merge-state-wrappers
   "Function for combining nested state machine state with greater state."
   [wrapper-target wrapper]
-  (println "NESTED CURRENT STATE:" (:current-state-name wrapper))
   (assoc wrapper-target
     :history (concat (:history wrapper-target) (:history wrapper))
     :current-value (get wrapper :current-value)))
@@ -54,7 +53,6 @@
               updated-state-wrapper (if nested?
                                       (update-wrapper (merge-state-wrappers state-wrapper res-value) (:current-value res-value) state (if res-value :success :fail))
                                       (update-wrapper state-wrapper res-value state (if res-value :success :fail)))]
-          (println "CURRENT STATE IS: " name)
           (cond
             (and (not res-value) on-fail) (invoke-state updated-state-wrapper acc on-fail)
             (and (not res-value) (not on-fail)) (throw (Error. (str "Failure occurred but no handler for state " state ". Data at time of failure " acc)))
