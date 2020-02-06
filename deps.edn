@@ -1,4 +1,6 @@
 {:paths ["src"]
  :aliases {:test {:extra-paths ["test"]
                   :extra-deps {lambdaisland/kaocha {:mvn/version "0.0-565"}}
-                  :main-opts ["-m" "kaocha.runner"]}}}
+                  :main-opts ["-m" "kaocha.runner"]}
+           :nrepl {:extra-deps  {nrepl  {:mvn/version  "RELEASE"}}
+                   :main-opts  ["-m"  "nrepl.cmdline"]}}}
