@@ -1,7 +1,10 @@
 (ns state-machine.game
-  (:require [state-machine.core :as c]))
+  (:require [state-machine.core :as c]
+            [bond.james :as bond :refer [with-spy]]
+            [clojure.pprint :refer [pprint]]
+            [clojure.test :refer :all]))
 
-(defn somebody-won?
+(defn stop?
   [x]
   (if (> x 9)
     (do
@@ -10,46 +13,87 @@
     false))
 
 (defn increase-value
-  [wrapper state x]
-  (println "state: " (:name state) " INCREASING: " x)
-  (inc x))
+  [wrapper state acc & [arg]]
+  (println "state: " (:name state) " INCREASING: " acc)
+  (or arg (inc acc)))
 
-#_(defn setup
-  [wrapper state acc]
-  {:players [{:name "Ryan"
-              :victory-points 0}
-             {:name "Liz"
-              :victory-points 0}]
-   :board {}})
+(defn setup
+  [wrapper state acc & [arg]]
+  (println "setup handler")
+  (increase-value wrapper state acc arg))
 
-(def state (c/init [{:name       :setup
-                     :handler increase-value                               ;setup
-                     :stop-after somebody-won?
-                     :automatic  true
-                     :on-success :game-rounds}
-                    {:name :game-rounds
-                     :on-success :game-over
-                     :automatic true
-                     :handler [{:name :upkeep
-                                :handler increase-value
-                                :automatic true
-                                :on-success :draw-card}
-                               {:name :draw-card
-                                :handler increase-value
-                                :automatic true
-                                :on-success :player-actions}
-                               {:name :player-actions
-                                :handler (fn [wrapper state x] {:next :pass-the-turn :value (inc x)})
-                                :automatic true
-                                :on-success :pass-the-turn}
-                               {:name :pass-the-turn
-                                :handler increase-value
-                                :automatic true
-                                :stop-after somebody-won?
-                                :on-success :upkeep}]}
-                    {:name       :game-over
-                     :handler    (fn [x y z] (println "The game is over.") x)
-                     :stop-after (fn [z] z)
-                     :automatic  false}]))
+(def first-nested (constantly true))
+(def second-nested (constantly true))
+(def last-nested (constantly true))
 
-(c/start state :setup 0)
+(def schema [{:name       :setup
+              :only-once? true
+              :handler    #'setup
+              :automatic  false
+              :on-success :start-nested}
+             {:name       :start-nested
+              :on-success :end
+              :automatic  false
+              :handler [{:name :first-nested
+                         :handler #'first-nested
+                         :automatic false
+                         :on-success :second-nested}
+                        {:name :second-nested
+                         :handler #'second-nested
+                         :automatic false
+                         :on-success :last-nested}
+                        {:name :last-nested
+                         :handler #'last-nested
+                         :automatic false
+                         :stop-after #'stop?
+                         :on-success :first-nested}]}
+             {:name       :end
+              :handler    (fn [x y z xx] (println "This is the end") x)
+              :stop-after (fn [z] z)
+              :automatic  false}])
+
+(deftest initialization-test
+  (testing "Init function returns schema and history"
+    (let [initted (c/init schema)]
+      (is (= #{:history :states} (into #{} (keys initted))))
+      (is (= [] (:history initted)))
+      (is (= schema (:states initted))))))
+
+(deftest start-test
+  (testing "start function"
+    (with-spy [setup]
+      (let [sm (c/init schema)]
+        (c/start sm 0)
+        (is (= 1 (-> setup bond/calls count)) "automatically calls the first state handler")))))
+
+(deftest manual-transition-test
+  (testing "Automatic transition does not occur"
+    (with-spy [first-nested]
+      (let [sm (c/init schema)]
+        (c/start sm 0)
+        (is (= 0 (-> first-nested bond/calls count))))))
+  (testing "Manual transition works"
+    (with-spy [first-nested]
+      (let [sm (c/init schema)
+            {:keys [state-wrapper next acc]} (c/start sm 0)
+            s (c/invoke-state state-wrapper acc next)]
+        (is (= 1 (-> first-nested bond/calls count)))
+        (is (= (-> s :state-wrapper :current-state-name) :start-nested))))))
+
+(deftest nested-state-machine-test
+  (testing "Nested state machines are reflected at the top-level wrapper"
+    (let [sm (c/init schema)
+          {:keys [state-wrapper next acc]} (c/start sm 0)
+          s (c/invoke-state state-wrapper acc next)
+          ss (c/invoke-state (:state-wrapper s) (:acc s) (:next s))]
+      (-> ss keys)
+        #_(is (= (-> ss :state-wrapper :current-state-name) :first-nested)))))
+
+(comment
+  (def initted (c/init schema))
+  (def started (c/start initted 0 :setup))
+  (def second-step (c/invoke-state (:state-wrapper started) (:acc started) (:next started) 921))
+ (pprint started)
+ (pprint second-step)
+ ()
+  )

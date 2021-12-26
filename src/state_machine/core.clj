@@ -11,7 +11,7 @@
   [state acc status]
   (-> state
       (assoc :value acc :status status)
-      (dissoc :handler :on-success :on-fail :unless :stop-after)))
+      (dissoc :handler :on-success :on-fail :stop-before :stop-after)))
 
 (defn update-wrapper
   "Update state wrapper with current value/state, add history entry, and current state name"
@@ -37,30 +37,44 @@
   {:states state-defs
    :history []})
 
+
+;; TODO: Move state out of state-wrapper, it just becomes schema in principal. Move it into the acc, which will be an associate structure, or track history as independent key.
 (defn invoke-state
   "The heart of this application. Accepts a state wrapper, current value/state, state name and optionally a context "
-  [state-wrapper acc state-name]
+  [state-wrapper acc state-name & [handler-arg]]
   (let [states (:states state-wrapper)]
-    (if-let [{:keys [name handler stop-after on-fail unless automatic on-success] :as state} (get-state-by-name states state-name)]
-      (if (and unless (unless acc))
+    (if-let [{:keys [name handler stop-after on-fail stop-before automatic paused on-success] :as state}
+             (get-state-by-name states state-name)]
+      (if (and stop-before (stop-before acc))
         (update-wrapper state-wrapper acc name true)
         (let [nested? (sequential? handler)
               res (if nested?
-                    (invoke-state (init handler) acc (:name (first handler)))
-                    (handler state-wrapper state acc)) ;handlers can either return a value or a map with keys :value and :next
+                    (invoke-state (init handler) acc (:name (first handler)) handler-arg)
+                    (handler state-wrapper state acc handler-arg)) ;handlers can either return a value or a map with keys :value and :next
               next-step (or (:next res) on-success)
               res-value (or (:value res) res)
               updated-state-wrapper (if nested?
-                                      (update-wrapper (merge-state-wrappers state-wrapper res-value) (:current-value res-value) state (if res-value :success :fail))
+                                      (update-wrapper
+                                        (merge-state-wrappers state-wrapper res-value)
+                                        (:current-value res-value)
+                                        state
+                                        (if res-value :success :fail))
                                       (update-wrapper state-wrapper res-value state (if res-value :success :fail)))]
           (cond
             (and (not res-value) on-fail) (invoke-state updated-state-wrapper acc on-fail)
-            (and (not res-value) (not on-fail)) (throw (Error. (str "Failure occurred but no handler for state " state ". Data at time of failure " acc)))
+            (and (not res-value) (not on-fail)) (throw (Error. (str "Failure occurred but no handler for state "
+                                                                    state
+                                                                    ". Data at time of failure "
+                                                                    acc)))
             (and stop-after (stop-after res-value)) updated-state-wrapper
             automatic (invoke-state updated-state-wrapper res-value on-success)
-            :else (partial invoke-state updated-state-wrapper res-value on-success))))
+            paused (partial invoke-state updated-state-wrapper res-value on-success)
+            :else {:state-wrapper updated-state-wrapper
+                   :next on-success
+                   :acc res-value})))
       (throw (AssertionError. (str "State \"" state-name "\" does not exist"))))))
 
 (defn start
-  [state name acc]
-  (invoke-state state acc name))
+  "Convenience function to invoke first state in schema"
+  [initialized-schema acc]
+  (invoke-state initialized-schema acc (-> initialized-schema :states first :name)))
