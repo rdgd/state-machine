@@ -3,78 +3,33 @@
 (defn get-state-by-name
   "Search state definitions for state by name"
   [state-defs state-name]
-  (some (fn [sd] (when (= state-name (:name sd)) sd)) state-defs))
+  (some
+    (fn [{:keys [handler] :as sd}]
+      (cond
+        (= state-name (:name sd)) sd
+        (sequential? handler) (get-state-by-name handler state-name)))
+    state-defs))
 
-(defn mk-history-entry
-  "Create some data for logging in history sequence. Add the current value/state and status, and strip out some state
-  data that doesn't serialize well (functions)"
-  [state acc status]
-  (-> state
-      (assoc :value acc :status status)
-      (dissoc :handler :on-success :on-fail :stop-before :stop-after)))
-
-(defn update-wrapper
-  "Update state wrapper with current value/state, add history entry, and current state name"
-  [{:keys [history] :as state-wrapper} acc current-state status & [dont-add-history?]]
-  (merge
-    state-wrapper
-    {:current-state-name (:name current-state)
-     :history            (if dont-add-history?
-                           history
-                           (conj history (mk-history-entry current-state acc status)))
-     :current-value      acc}))
-
-(defn merge-state-wrappers
-  "Function for combining nested state machine state with greater state."
-  [wrapper-target wrapper]
-  (assoc wrapper-target
-    :history (concat (:history wrapper-target) (:history wrapper))
-    :current-value (get wrapper :current-value)))
-
-(defn init
-  "Initialize state wrapper with state definitions and empty history."
-  [state-defs]
-  {:states state-defs
-   :history []})
-
-
-;; TODO: Move state out of state-wrapper, it just becomes schema in principal. Move it into the acc, which will be an associate structure, or track history as independent key.
 (defn invoke-state
-  "The heart of this application. Accepts a state wrapper, current value/state, state name and optionally a context "
-  [state-wrapper acc state-name & [handler-arg]]
-  (let [states (:states state-wrapper)]
-    (if-let [{:keys [name handler stop-after on-fail stop-before automatic paused on-success] :as state}
-             (get-state-by-name states state-name)]
-      (if (and stop-before (stop-before acc))
-        (update-wrapper state-wrapper acc name true)
-        (let [nested? (sequential? handler)
-              res (if nested?
-                    (invoke-state (init handler) acc (:name (first handler)) handler-arg)
-                    (handler state-wrapper state acc handler-arg)) ;handlers can either return a value or a map with keys :value and :next
-              next-step (or (:next res) on-success)
-              res-value (or (:value res) res)
-              updated-state-wrapper (if nested?
-                                      (update-wrapper
-                                        (merge-state-wrappers state-wrapper res-value)
-                                        (:current-value res-value)
-                                        state
-                                        (if res-value :success :fail))
-                                      (update-wrapper state-wrapper res-value state (if res-value :success :fail)))]
-          (cond
-            (and (not res-value) on-fail) (invoke-state updated-state-wrapper acc on-fail)
-            (and (not res-value) (not on-fail)) (throw (Error. (str "Failure occurred but no handler for state "
-                                                                    state
-                                                                    ". Data at time of failure "
-                                                                    acc)))
-            (and stop-after (stop-after res-value)) updated-state-wrapper
-            automatic (invoke-state updated-state-wrapper res-value on-success)
-            paused (partial invoke-state updated-state-wrapper res-value on-success)
-            :else {:state-wrapper updated-state-wrapper
-                   :next on-success
-                   :acc res-value})))
-      (throw (AssertionError. (str "State \"" state-name "\" does not exist"))))))
+  ""
+  [{:keys [schema acc state-name handler-arg] :as sm}]
+  (if-let [{:keys [name handler stop-after on-fail stop-before automatic on-success]} (get-state-by-name schema state-name)]
+    (cond
+      (and stop-before (stop-before acc)) (assoc sm :state-name name)
+      (sequential? handler) (invoke-state (assoc sm :state-name (-> handler first :name)))
+      :else (let [res (handler sm)
+                  success-args (assoc sm :state-name on-success :acc res)]
+              (cond
+                (and (not res) on-fail) (invoke-state (assoc sm :state-name on-fail))
+                (and (not res) (not on-fail)) (throw (Error. (str "Missing on-fail handler for state " state-name)))
+                (and stop-after (stop-after res)) success-args
+                automatic (invoke-state success-args)
+                :else success-args)))
+    (throw (AssertionError. (str "State \"" state-name "\" does not exist")))))
 
 (defn start
   "Convenience function to invoke first state in schema"
-  [initialized-schema acc]
-  (invoke-state initialized-schema acc (-> initialized-schema :states first :name)))
+  [schema acc]
+  (invoke-state {:schema schema
+                 :acc acc
+                 :state-name (-> schema first :name)}))
